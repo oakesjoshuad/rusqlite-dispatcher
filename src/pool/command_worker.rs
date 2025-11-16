@@ -113,3 +113,67 @@ impl<H: DomainHandler> CommandWorker<H> {
         Ok(())
     }
 }
+
+// --- TESTS ---
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_metrics_default_initializes_to_zero() {
+        let metrics = CommandMetrics::default();
+        assert_eq!(metrics.fetch_commands_processed(), 0);
+        assert_eq!(metrics.fetch_last_command_duration_micros(), 0);
+    }
+
+    #[test]
+    fn command_metrics_increment_commands_processed() {
+        let metrics = CommandMetrics::default();
+        metrics.increment_commands_processed();
+        assert_eq!(metrics.fetch_commands_processed(), 1);
+        metrics.increment_commands_processed();
+        assert_eq!(metrics.fetch_commands_processed(), 2);
+    }
+
+    #[test]
+    fn command_metrics_record_command_duration() {
+        let metrics = CommandMetrics::default();
+        let duration = Duration::from_micros(1000);
+        metrics.record_command_duration(duration);
+        assert_eq!(metrics.fetch_last_command_duration_micros(), 1000);
+    }
+
+    #[test]
+    fn command_metrics_multiple_durations() {
+        let metrics = CommandMetrics::default();
+
+        let d1 = Duration::from_micros(100);
+        metrics.record_command_duration(d1);
+        assert_eq!(metrics.fetch_last_command_duration_micros(), 100);
+
+        let d2 = Duration::from_micros(200);
+        metrics.record_command_duration(d2);
+        assert_eq!(metrics.fetch_last_command_duration_micros(), 200);
+    }
+
+    #[test]
+    fn command_metrics_concurrent_increments() {
+        let metrics = Arc::new(CommandMetrics::default());
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let m = Arc::clone(&metrics);
+            let handle = std::thread::spawn(move || {
+                m.increment_commands_processed();
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(metrics.fetch_commands_processed(), 10);
+    }
+}

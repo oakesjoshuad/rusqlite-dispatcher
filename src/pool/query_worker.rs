@@ -127,3 +127,117 @@ impl<H: DomainHandler> QueryWorker<H> {
         Ok(())
     }
 }
+
+// --- TESTS ---
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_metrics_new_initializes_to_zero() {
+        let metrics = QueryMetrics::new();
+        assert_eq!(metrics.fetch_queries_processed(), 0);
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 0);
+        assert_eq!(metrics.fetch_last_query_duration_micros(), 0);
+    }
+
+    #[test]
+    fn query_metrics_fetch_queries_processed() {
+        let metrics = QueryMetrics::new();
+        metrics.queries_processed.fetch_add(1, Relaxed);
+        assert_eq!(metrics.fetch_queries_processed(), 1);
+        metrics.queries_processed.fetch_add(5, Relaxed);
+        assert_eq!(metrics.fetch_queries_processed(), 6);
+    }
+
+    #[test]
+    fn query_metrics_first_duration_sets_average() {
+        let metrics = QueryMetrics::new();
+        let duration = Duration::from_micros(1000);
+        metrics.record_query_duration(duration);
+
+        assert_eq!(metrics.fetch_last_query_duration_micros(), 1000);
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 1000);
+    }
+
+    #[test]
+    fn query_metrics_ewma_smoothing() {
+        let metrics = QueryMetrics::new();
+
+        // First duration: 1000 → avg = 1000
+        metrics.record_query_duration(Duration::from_micros(1000));
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 1000);
+
+        // Second duration: 2000
+        // EWMA = (2000 / 5) + (1000 * 4 / 5) = 400 + 800 = 1200
+        metrics.record_query_duration(Duration::from_micros(2000));
+        assert_eq!(metrics.fetch_last_query_duration_micros(), 2000);
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 1200);
+
+        // Third duration: 2000
+        // EWMA = (2000 / 5) + (1200 * 4 / 5) = 400 + 960 = 1360
+        metrics.record_query_duration(Duration::from_micros(2000));
+        assert_eq!(metrics.fetch_last_query_duration_micros(), 2000);
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 1360);
+    }
+
+    #[test]
+    fn query_metrics_ewma_dampens_outliers() {
+        let metrics = QueryMetrics::new();
+
+        // Establish baseline: 100μs
+        metrics.record_query_duration(Duration::from_micros(100));
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 100);
+
+        // Outlier spike: 10000μs
+        // EWMA = (10000 / 5) + (100 * 4 / 5) = 2000 + 80 = 2080
+        metrics.record_query_duration(Duration::from_micros(10000));
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 2080);
+
+        // Return to normal: 100μs
+        // EWMA = (100 / 5) + (2080 * 4 / 5) = 20 + 1664 = 1684
+        metrics.record_query_duration(Duration::from_micros(100));
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 1684);
+
+        // Recover: 100μs
+        // EWMA = (100 / 5) + (1684 * 4 / 5) = 20 + 1347 = 1367
+        metrics.record_query_duration(Duration::from_micros(100));
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 1367);
+    }
+
+    #[test]
+    fn query_metrics_concurrent_increments() {
+        let metrics = Arc::new(QueryMetrics::new());
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let m = Arc::clone(&metrics);
+            let handle = std::thread::spawn(move || {
+                m.queries_processed.fetch_add(1, Relaxed);
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(metrics.fetch_queries_processed(), 10);
+    }
+
+    #[test]
+    fn query_metrics_last_duration_updates_independently() {
+        let metrics = QueryMetrics::new();
+
+        let d1 = Duration::from_micros(100);
+        metrics.record_query_duration(d1);
+        assert_eq!(metrics.fetch_last_query_duration_micros(), 100);
+
+        let d2 = Duration::from_micros(500);
+        metrics.record_query_duration(d2);
+        assert_eq!(metrics.fetch_last_query_duration_micros(), 500);
+        // EWMA = (500 / 5) + (100 * 4 / 5) = 100 + 80 = 180
+        assert_eq!(metrics.fetch_avg_query_duration_micros(), 180);
+    }
+}
