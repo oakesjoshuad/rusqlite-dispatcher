@@ -1,6 +1,7 @@
 // Internal modules
 mod channel;
 mod clock;
+mod pool;
 mod request;
 
 // Crate-internal re-exports
