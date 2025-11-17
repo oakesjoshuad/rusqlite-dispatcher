@@ -21,7 +21,7 @@ const EWMA_ALPHA: f64 = 0.4;
 
 type SupervisorJoinHandle = tokio::task::JoinHandle<()>;
 
-// --- SUPERVISOR CONFIG ---
+// --- TYPES ---
 
 /// Supervisor configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,19 +32,9 @@ pub struct SupervisorConfig {
     pub max_query_workers: usize,
     /// Channel capacity for backpressure.
     pub channel_size: usize,
+    /// Control channel capacity for shutdown signaling.
+    pub control_channel_size: usize,
 }
-
-impl Default for SupervisorConfig {
-    fn default() -> Self {
-        Self {
-            query_workers: 4,
-            max_query_workers: 8,
-            channel_size: 100,
-        }
-    }
-}
-
-// --- SUPERVISOR ---
 
 /// Supervisor manages worker lifecycle and metrics aggregation.
 pub(crate) struct Supervisor<H: DomainHandler> {
@@ -54,14 +44,54 @@ pub(crate) struct Supervisor<H: DomainHandler> {
     metrics: Arc<SupervisorMetrics>,
 }
 
+/// Cloneable handle to supervisor for dispatcher.
+///
+/// Contains only cloneable parts (senders, dispatch handle, metrics) to enable
+/// `Dispatcher` to be `Clone`. Shutdown is handled via Arc<Mutex<Option<JoinHandle>>>
+/// to allow exactly one shutdown call.
+#[derive(Clone, Debug)]
+pub(crate) struct SupervisorHandle<H: DomainHandler> {
+    pub(crate) command_sender: CommandSender<H>,
+    pub(crate) query_dispatch: QueryDispatchHandle<H>,
+    pub(crate) control_sender: ControlSender,
+    pub(crate) shutdown: Arc<Mutex<Option<SupervisorJoinHandle>>>,
+    pub(crate) metrics: Arc<SupervisorMetrics>,
+}
+
+// --- IMPLEMENTATIONS ---
+
+impl Default for SupervisorConfig {
+    fn default() -> Self {
+        Self {
+            query_workers: 4,
+            max_query_workers: 8,
+            channel_size: 100,
+            control_channel_size: 100,
+        }
+    }
+}
+
 impl<H: DomainHandler> Supervisor<H> {
+    /// Calculate EWMA (Exponentially Weighted Moving Average).
+    ///
+    /// Uses alpha=0.4 (40% new value, 60% historical average).
+    /// Returns current value if this is the first measurement.
+    #[inline]
+    fn calculate_ewma(current: f64, previous: f64, is_first: bool) -> f64 {
+        match is_first {
+            true => current,
+            false => (EWMA_ALPHA * current) + ((1.0 - EWMA_ALPHA) * previous),
+        }
+    }
+
     /// Spawn supervisor with workers and return handle.
     pub(crate) async fn spawn(
         db_path: &str,
         handler: H,
         config: &SupervisorConfig,
     ) -> Result<SupervisorHandle<H>> {
-        let (control_sender, control_receiver) = tokio::sync::mpsc::channel(100);
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel_size);
 
         // Spawn single command worker
         let (command_worker, command_sender) =
@@ -156,10 +186,7 @@ impl<H: DomainHandler> Supervisor<H> {
             let measured_tps = commands_delta as f64 / time_delta_secs;
 
             let last_tps = self.metrics.fetch_avg_sustained_tps();
-            let ewma_tps = match last_tps {
-                0.0 => measured_tps,
-                _ => (EWMA_ALPHA * measured_tps) + ((1.0 - EWMA_ALPHA) * last_tps),
-            };
+            let ewma_tps = Self::calculate_ewma(measured_tps, last_tps, last_tps == 0.0);
 
             self.metrics.put_avg_sustained_tps(ewma_tps);
 
@@ -180,8 +207,11 @@ impl<H: DomainHandler> Supervisor<H> {
         let ewma_duration = match last_avg_duration.is_zero() {
             true => Duration::from_micros(current_duration_micros),
             false => {
-                let ewma = (EWMA_ALPHA * current_duration_micros as f64)
-                    + ((1.0 - EWMA_ALPHA) * last_avg_duration.as_micros() as f64);
+                let ewma = Self::calculate_ewma(
+                    current_duration_micros as f64,
+                    last_avg_duration.as_micros() as f64,
+                    false,
+                );
                 Duration::from_micros(ewma as u64)
             }
         };
@@ -199,12 +229,9 @@ impl<H: DomainHandler> Supervisor<H> {
         let queued = (max_capacity - available) as u64;
         let current_saturation = queued as f64 / max_capacity as f64;
 
-        // EWMA smoothing
         let last_saturation = self.metrics.fetch_avg_command_saturation();
-        let ewma_saturation = match last_saturation {
-            0.0 => current_saturation,
-            _ => (EWMA_ALPHA * current_saturation) + ((1.0 - EWMA_ALPHA) * last_saturation),
-        };
+        let ewma_saturation =
+            Self::calculate_ewma(current_saturation, last_saturation, last_saturation == 0.0);
 
         self.metrics.put_avg_command_saturation(ewma_saturation);
     }
@@ -244,22 +271,6 @@ impl<H: DomainHandler> Supervisor<H> {
             }
         }
     }
-}
-
-// --- SUPERVISOR HANDLE ---
-
-/// Cloneable handle to supervisor for dispatcher.
-///
-/// Contains only cloneable parts (senders, dispatch handle, metrics) to enable
-/// `Dispatcher` to be `Clone`. Shutdown is handled via Arc<Mutex<Option<JoinHandle>>>
-/// to allow exactly one shutdown call.
-#[derive(Clone, Debug)]
-pub(crate) struct SupervisorHandle<H: DomainHandler> {
-    pub(crate) command_sender: CommandSender<H>,
-    pub(crate) query_dispatch: QueryDispatchHandle<H>,
-    pub(crate) control_sender: ControlSender,
-    pub(crate) shutdown: Arc<Mutex<Option<SupervisorJoinHandle>>>,
-    pub(crate) metrics: Arc<SupervisorMetrics>,
 }
 
 impl<H: DomainHandler> SupervisorHandle<H> {
