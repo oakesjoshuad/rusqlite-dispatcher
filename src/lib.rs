@@ -3,6 +3,7 @@ mod channel;
 mod clock;
 mod pool;
 mod request;
+mod supervisor;
 
 // Crate-internal re-exports
 pub(crate) use clock::{Duration, Timestamp};
