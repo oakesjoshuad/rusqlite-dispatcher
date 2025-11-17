@@ -51,6 +51,7 @@ type QueryPoolSenders<H> = Arc<ArcSwap<Vec<(WorkerId, QuerySender<H>)>>>;
 ///
 /// This separation enables `Dispatcher` to be `Clone` without requiring
 /// `Arc<Dispatcher>` wrapper while maintaining lock-free hot path
+#[derive(Debug)]
 pub(crate) struct QueryWorkerPool<H: DomainHandler> {
     workers: HashMap<WorkerId, SupervisedQueryWorker>,
     dispatch: QueryDispatchHandle<H>,
@@ -277,7 +278,13 @@ mod tests {
         let handle1 = pool.dispatch_handle();
         let handle2 = handle1.clone();
         // Verify both handles fail when empty (share same state)
-        assert!(matches!(handle1.get_next_worker_index(), Err(Error::NoQueryWorkers)));
-        assert!(matches!(handle2.get_next_worker_index(), Err(Error::NoQueryWorkers)));
+        assert!(matches!(
+            handle1.get_next_worker_index(),
+            Err(Error::NoQueryWorkers)
+        ));
+        assert!(matches!(
+            handle2.get_next_worker_index(),
+            Err(Error::NoQueryWorkers)
+        ));
     }
 }

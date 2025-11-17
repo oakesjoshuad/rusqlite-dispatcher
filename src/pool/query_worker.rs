@@ -4,9 +4,9 @@
 //! Tracks metrics with EWMA smoothing for latency monitoring.
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
 
 use super::worker::{SupervisedWorker, Worker, WorkerRunner};
 use crate::channel::{QueryReceiver, QueryRequest};
