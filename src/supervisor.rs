@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "trace")]
+use tracing::{debug, error, info, instrument};
+
 use crate::channel::{CommandSender, ControlReceiver, ControlSender};
 use crate::clock::{Duration, Timestamp};
 use crate::error::{Error, Result};
@@ -85,6 +88,12 @@ impl<H: DomainHandler> Supervisor<H> {
     }
 
     /// Spawn supervisor with workers and return handle.
+    #[cfg_attr(feature = "trace", instrument(skip(handler), fields(
+        db_path = %db_path,
+        query_workers = config.query_workers,
+        channel_size = config.channel_size,
+        control_channel_size = config.control_channel_size
+    )))]
     pub(crate) async fn spawn(
         db_path: &str,
         handler: H,
@@ -128,17 +137,25 @@ impl<H: DomainHandler> Supervisor<H> {
             metrics,
         };
 
+        #[cfg(feature = "trace")]
+        info!("Supervisor spawned successfully");
+
         Ok(supervisor_handle)
     }
 
     /// Run supervisor background loop with periodic metrics aggregation.
     async fn run(self, mut receiver: ControlReceiver) {
+        #[cfg(feature = "trace")]
+        info!("Supervisor background task starting");
+
         let mut aggregate_interval = tokio::time::interval(std::time::Duration::from_secs(4));
 
         loop {
             tokio::select! {
                 signal = receiver.recv() => {
                     if signal.is_none() {
+                        #[cfg(feature = "trace")]
+                        info!("Shutdown signal received");
                         break;
                     }
                 }
@@ -147,6 +164,9 @@ impl<H: DomainHandler> Supervisor<H> {
                 }
             }
         }
+
+        #[cfg(feature = "trace")]
+        info!("Supervisor shutting down workers");
 
         self.shutdown().await
     }
@@ -161,6 +181,16 @@ impl<H: DomainHandler> Supervisor<H> {
         self.aggregate_query_metrics();
 
         self.metrics.put_last_aggregation(now);
+
+        #[cfg(feature = "trace")]
+        debug!(
+            total_commands = self.metrics.fetch_total_commands(),
+            sustained_tps = self.metrics.fetch_avg_sustained_tps(),
+            command_saturation = self.metrics.fetch_avg_command_saturation(),
+            total_queries = self.metrics.fetch_total_queries(),
+            query_workers = self.metrics.fetch_query_worker_count(),
+            "Metrics aggregated"
+        );
     }
 
     /// Calculate time delta in seconds since last aggregation.
@@ -258,12 +288,28 @@ impl<H: DomainHandler> Supervisor<H> {
         match self.command_worker.join_handle.await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {
+                #[cfg(feature = "trace")]
+                error!(
+                    worker_id = %self.command_worker.worker_id,
+                    ?err,
+                    "Command worker error during shutdown"
+                );
+
+                #[cfg(not(feature = "trace"))]
                 eprintln!(
                     "Command worker {} error during shutdown: {:?}",
                     self.command_worker.worker_id, err
                 );
             }
             Err(err) => {
+                #[cfg(feature = "trace")]
+                error!(
+                    worker_id = %self.command_worker.worker_id,
+                    ?err,
+                    "Command worker panicked during shutdown"
+                );
+
+                #[cfg(not(feature = "trace"))]
                 eprintln!(
                     "Command worker {} panicked during shutdown: {:?}",
                     self.command_worker.worker_id, err
@@ -294,7 +340,12 @@ impl<H: DomainHandler> SupervisorHandle<H> {
         match join_handle.await {
             Ok(()) => Ok(()),
             Err(err) => {
+                #[cfg(feature = "trace")]
+                error!(?err, "Supervisor panicked during shutdown");
+
+                #[cfg(not(feature = "trace"))]
                 eprintln!("Supervisor panicked during shutdown: {:?}", err);
+
                 Err(Error::Internal(format!("Supervisor panic: {}", err)))
             }
         }
