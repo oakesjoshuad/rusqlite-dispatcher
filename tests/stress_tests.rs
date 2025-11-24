@@ -19,8 +19,8 @@
 //!   - DEBUG: Debug and above
 //!   - TRACE: Everything
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rusqlite_dispatcher::{Dispatcher, DispatcherConfig, DomainHandler, Result};
@@ -57,7 +57,8 @@ impl ProductionMetrics {
 
     fn record_command_success(&self, latency_us: u64) {
         self.commands_succeeded.fetch_add(1, Ordering::Relaxed);
-        self.total_command_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.total_command_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
     }
 
     fn record_command_backpressure(&self) {
@@ -66,7 +67,8 @@ impl ProductionMetrics {
 
     fn record_query_success(&self, value: u64, latency_us: u64) {
         self.queries_succeeded.fetch_add(1, Ordering::Relaxed);
-        self.total_query_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.total_query_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.min_observed.fetch_min(value, Ordering::Relaxed);
         self.max_observed.fetch_max(value, Ordering::Relaxed);
     }
@@ -93,9 +95,18 @@ impl ProductionMetrics {
         println!("\nTHROUGHPUT:");
         println!("  Duration:          {:.2}s", duration_secs);
         println!("  Total Operations:  {}", total_ops);
-        println!("  Operations/sec:    {:.0}", total_ops as f64 / duration_secs);
-        println!("  Commands/sec:      {:.0}", total_cmds as f64 / duration_secs);
-        println!("  Queries/sec:       {:.0}", total_queries as f64 / duration_secs);
+        println!(
+            "  Operations/sec:    {:.0}",
+            total_ops as f64 / duration_secs
+        );
+        println!(
+            "  Commands/sec:      {:.0}",
+            total_cmds as f64 / duration_secs
+        );
+        println!(
+            "  Queries/sec:       {:.0}",
+            total_queries as f64 / duration_secs
+        );
 
         // Workload mix
         let write_pct = if total_ops > 0 {
@@ -105,7 +116,11 @@ impl ProductionMetrics {
         };
         println!("\nWORKLOAD MIX:");
         println!("  Commands (writes): {} ({:.1}%)", total_cmds, write_pct);
-        println!("  Queries (reads):   {} ({:.1}%)", total_queries, 100.0 - write_pct);
+        println!(
+            "  Queries (reads):   {} ({:.1}%)",
+            total_queries,
+            100.0 - write_pct
+        );
 
         // Success rates
         let cmd_success_rate = if total_cmds > 0 {
@@ -143,7 +158,10 @@ impl ProductionMetrics {
         if min_obs != u64::MAX && max_obs > 0 {
             let range = max_obs.saturating_sub(min_obs);
             println!("\nCONCURRENT PROGRESSION:");
-            println!("  Observed Range: {} - {} (width: {})", min_obs, max_obs, range);
+            println!(
+                "  Observed Range: {} - {} (width: {})",
+                min_obs, max_obs, range
+            );
             println!("  (Wide range validates queries ran during writes)");
         }
 
@@ -159,8 +177,16 @@ impl ProductionMetrics {
             0
         };
         println!("\nLATENCY:");
-        println!("  Avg Command: {}us ({:.2}ms)", avg_cmd_us, avg_cmd_us as f64 / 1000.0);
-        println!("  Avg Query:   {}us ({:.2}ms)", avg_qry_us, avg_qry_us as f64 / 1000.0);
+        println!(
+            "  Avg Command: {}us ({:.2}ms)",
+            avg_cmd_us,
+            avg_cmd_us as f64 / 1000.0
+        );
+        println!(
+            "  Avg Query:   {}us ({:.2}ms)",
+            avg_qry_us,
+            avg_qry_us as f64 / 1000.0
+        );
 
         println!("{}", "=".repeat(70));
     }
@@ -273,7 +299,11 @@ mod sync_tests {
         println!("\nConcurrent Access Test (Sync)");
         println!("Threads: 1 writer + 3 readers");
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
         dispatcher.execute_command(CounterCommand::Initialize)?;
 
         let metrics = Arc::new(ProductionMetrics::new());
@@ -290,15 +320,24 @@ mod sync_tests {
                         if is_writer {
                             let cmd_start = Instant::now();
                             match d.execute_command(CounterCommand::Increment) {
-                                Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                                Ok(()) => {
+                                    m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                                }
+                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                    m.record_command_backpressure()
+                                }
                                 Err(e) => panic!("Command error: {:?}", e),
                             }
                         } else {
                             let qry_start = Instant::now();
                             match d.execute_query(GetCount) {
-                                Ok(v) => m.record_query_success(v, qry_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => m.record_query_backpressure(),
+                                Ok(v) => m.record_query_success(
+                                    v,
+                                    qry_start.elapsed().as_micros() as u64,
+                                ),
+                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => {
+                                    m.record_query_backpressure()
+                                }
                                 Err(e) => panic!("Query error: {:?}", e),
                             }
                         }
@@ -316,7 +355,10 @@ mod sync_tests {
 
         let final_count = dispatcher.execute_query(GetCount)?;
         let expected = metrics.commands_succeeded.load(Ordering::Relaxed);
-        assert_eq!(final_count, expected, "Final count should match successful commands");
+        assert_eq!(
+            final_count, expected,
+            "Final count should match successful commands"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -335,7 +377,11 @@ mod sync_tests {
         println!("\nBackpressure Boundary Test (Sync)");
         println!("Threads: 4 writers (no delay) - finding saturation point");
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
         dispatcher.execute_command(CounterCommand::Initialize)?;
 
         let metrics = Arc::new(ProductionMetrics::new());
@@ -351,8 +397,12 @@ mod sync_tests {
                     for _ in 0..500 {
                         let cmd_start = Instant::now();
                         match d.execute_command(CounterCommand::Increment) {
-                            Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                            Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                            Ok(()) => {
+                                m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                            }
+                            Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                m.record_command_backpressure()
+                            }
                             Err(e) => panic!("Command error: {:?}", e),
                         }
                         // No delay - maximum pressure
@@ -365,7 +415,10 @@ mod sync_tests {
             h.join().unwrap();
         }
 
-        metrics.report("Backpressure Boundary (Sync)", start.elapsed().as_secs_f64());
+        metrics.report(
+            "Backpressure Boundary (Sync)",
+            start.elapsed().as_secs_f64(),
+        );
 
         let bp = metrics.commands_backpressure.load(Ordering::Relaxed);
         println!("\nBackpressure events: {}", bp);
@@ -393,7 +446,11 @@ mod sync_tests {
         println!("\nMixed Workload 80/20 Test (Sync)");
         println!("Duration: {}s | Workers: {}", DURATION_SECS, NUM_WORKERS);
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
         dispatcher.execute_command(CounterCommand::Initialize)?;
 
         let metrics = Arc::new(ProductionMetrics::new());
@@ -410,20 +467,29 @@ mod sync_tests {
                     let mut op_count = 0u64;
                     while !complete.load(Ordering::Relaxed) {
                         // 80% reads, 20% writes
-                        let is_read = (op_count % 5) != 0; // 4 reads per 1 write
+                        let is_read = op_count.is_multiple_of(5); // 4 reads per 1 write
 
                         if is_read {
                             let qry_start = Instant::now();
                             match d.execute_query(GetCount) {
-                                Ok(v) => m.record_query_success(v, qry_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => m.record_query_backpressure(),
+                                Ok(v) => m.record_query_success(
+                                    v,
+                                    qry_start.elapsed().as_micros() as u64,
+                                ),
+                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => {
+                                    m.record_query_backpressure()
+                                }
                                 Err(e) => panic!("Worker {} query error: {:?}", worker_id, e),
                             }
                         } else {
                             let cmd_start = Instant::now();
                             match d.execute_command(CounterCommand::Increment) {
-                                Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                                Ok(()) => {
+                                    m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                                }
+                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                    m.record_command_backpressure()
+                                }
                                 Err(e) => panic!("Worker {} command error: {:?}", worker_id, e),
                             }
                         }
@@ -447,7 +513,10 @@ mod sync_tests {
         // Validate final consistency
         let final_count = dispatcher.execute_query(GetCount)?;
         let expected = metrics.commands_succeeded.load(Ordering::Relaxed);
-        assert_eq!(final_count, expected, "Database count should match successful commands");
+        assert_eq!(
+            final_count, expected,
+            "Database count should match successful commands"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -471,10 +540,14 @@ mod async_tests {
         let _ = std::fs::remove_file(db_path);
 
         let dispatcher = Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?;
-        dispatcher.execute_command(CounterCommand::Initialize).await?;
+        dispatcher
+            .execute_command(CounterCommand::Initialize)
+            .await?;
 
         for _ in 0..10 {
-            dispatcher.execute_command(CounterCommand::Increment).await?;
+            dispatcher
+                .execute_command(CounterCommand::Increment)
+                .await?;
         }
 
         let count = dispatcher.execute_query(GetCount).await?;
@@ -496,8 +569,14 @@ mod async_tests {
         println!("\nConcurrent Access Test (Async)");
         println!("Tasks: 1 writer + 3 readers");
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
-        dispatcher.execute_command(CounterCommand::Initialize).await?;
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
+        dispatcher
+            .execute_command(CounterCommand::Initialize)
+            .await?;
 
         let metrics = Arc::new(ProductionMetrics::new());
         let start = Instant::now();
@@ -513,15 +592,24 @@ mod async_tests {
                         if is_writer {
                             let cmd_start = Instant::now();
                             match d.execute_command(CounterCommand::Increment).await {
-                                Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                                Ok(()) => {
+                                    m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                                }
+                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                    m.record_command_backpressure()
+                                }
                                 Err(e) => panic!("Command error: {:?}", e),
                             }
                         } else {
                             let qry_start = Instant::now();
                             match d.execute_query(GetCount).await {
-                                Ok(v) => m.record_query_success(v, qry_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => m.record_query_backpressure(),
+                                Ok(v) => m.record_query_success(
+                                    v,
+                                    qry_start.elapsed().as_micros() as u64,
+                                ),
+                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => {
+                                    m.record_query_backpressure()
+                                }
                                 Err(e) => panic!("Query error: {:?}", e),
                             }
                         }
@@ -556,8 +644,14 @@ mod async_tests {
         println!("\nBackpressure Boundary Test (Async)");
         println!("Tasks: 4 writers (no delay) - finding saturation point");
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
-        dispatcher.execute_command(CounterCommand::Initialize).await?;
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
+        dispatcher
+            .execute_command(CounterCommand::Initialize)
+            .await?;
 
         let metrics = Arc::new(ProductionMetrics::new());
         let start = Instant::now();
@@ -571,8 +665,12 @@ mod async_tests {
                     for _ in 0..500 {
                         let cmd_start = Instant::now();
                         match d.execute_command(CounterCommand::Increment).await {
-                            Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                            Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                            Ok(()) => {
+                                m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                            }
+                            Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                m.record_command_backpressure()
+                            }
                             Err(e) => panic!("Command error: {:?}", e),
                         }
                     }
@@ -584,7 +682,10 @@ mod async_tests {
             h.await.unwrap();
         }
 
-        metrics.report("Backpressure Boundary (Async)", start.elapsed().as_secs_f64());
+        metrics.report(
+            "Backpressure Boundary (Async)",
+            start.elapsed().as_secs_f64(),
+        );
 
         let bp = metrics.commands_backpressure.load(Ordering::Relaxed);
         println!("\nBackpressure events: {}", bp);
@@ -607,8 +708,14 @@ mod async_tests {
         println!("\nMixed Workload 80/20 Test (Async)");
         println!("Duration: {}s | Tasks: {}", DURATION_SECS, NUM_TASKS);
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
-        dispatcher.execute_command(CounterCommand::Initialize).await?;
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
+        dispatcher
+            .execute_command(CounterCommand::Initialize)
+            .await?;
 
         let metrics = Arc::new(ProductionMetrics::new());
         let test_complete = Arc::new(AtomicBool::new(false));
@@ -628,15 +735,24 @@ mod async_tests {
                         if is_read {
                             let qry_start = Instant::now();
                             match d.execute_query(GetCount).await {
-                                Ok(v) => m.record_query_success(v, qry_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => m.record_query_backpressure(),
+                                Ok(v) => m.record_query_success(
+                                    v,
+                                    qry_start.elapsed().as_micros() as u64,
+                                ),
+                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => {
+                                    m.record_query_backpressure()
+                                }
                                 Err(e) => panic!("Task {} query error: {:?}", task_id, e),
                             }
                         } else {
                             let cmd_start = Instant::now();
                             match d.execute_command(CounterCommand::Increment).await {
-                                Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                                Ok(()) => {
+                                    m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                                }
+                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                    m.record_command_backpressure()
+                                }
                                 Err(e) => panic!("Task {} command error: {:?}", task_id, e),
                             }
                         }
@@ -655,7 +771,10 @@ mod async_tests {
             h.await.unwrap();
         }
 
-        metrics.report("Mixed Workload 80/20 (Async)", start.elapsed().as_secs_f64());
+        metrics.report(
+            "Mixed Workload 80/20 (Async)",
+            start.elapsed().as_secs_f64(),
+        );
 
         let final_count = dispatcher.execute_query(GetCount).await?;
         let expected = metrics.commands_succeeded.load(Ordering::Relaxed);
@@ -679,8 +798,14 @@ mod async_tests {
         println!("\nConcurrent Users Duration Test (Async)");
         println!("Duration: {}s | Users: {}", DURATION_SECS, CONCURRENT_USERS);
 
-        let dispatcher = Arc::new(Dispatcher::new(db_path, CounterHandler, DispatcherConfig::default())?);
-        dispatcher.execute_command(CounterCommand::Initialize).await?;
+        let dispatcher = Arc::new(Dispatcher::new(
+            db_path,
+            CounterHandler,
+            DispatcherConfig::default(),
+        )?);
+        dispatcher
+            .execute_command(CounterCommand::Initialize)
+            .await?;
 
         let metrics = Arc::new(ProductionMetrics::new());
         let test_complete = Arc::new(AtomicBool::new(false));
@@ -703,15 +828,24 @@ mod async_tests {
                         if is_read {
                             let qry_start = Instant::now();
                             match d.execute_query(GetCount).await {
-                                Ok(v) => m.record_query_success(v, qry_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => m.record_query_backpressure(),
+                                Ok(v) => m.record_query_success(
+                                    v,
+                                    qry_start.elapsed().as_micros() as u64,
+                                ),
+                                Err(rusqlite_dispatcher::Error::QueryWorkersBusy) => {
+                                    m.record_query_backpressure()
+                                }
                                 Err(e) => panic!("User {} error: {:?}", user_id, e),
                             }
                         } else {
                             let cmd_start = Instant::now();
                             match d.execute_command(CounterCommand::Increment).await {
-                                Ok(()) => m.record_command_success(cmd_start.elapsed().as_micros() as u64),
-                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => m.record_command_backpressure(),
+                                Ok(()) => {
+                                    m.record_command_success(cmd_start.elapsed().as_micros() as u64)
+                                }
+                                Err(rusqlite_dispatcher::Error::CommandWorkerBusy) => {
+                                    m.record_command_backpressure()
+                                }
                                 Err(e) => panic!("User {} error: {:?}", user_id, e),
                             }
                         }
@@ -744,14 +878,20 @@ mod async_tests {
         }
         progress_handle.await.unwrap();
 
-        metrics.report("Concurrent Users Duration (Async)", start.elapsed().as_secs_f64());
+        metrics.report(
+            "Concurrent Users Duration (Async)",
+            start.elapsed().as_secs_f64(),
+        );
 
         // Validate concurrent progression
         let min = metrics.min_observed.load(Ordering::Relaxed);
         let max = metrics.max_observed.load(Ordering::Relaxed);
         if min != u64::MAX && max > 0 {
             let range = max - min;
-            assert!(range > max / 10, "Observation range too narrow - queries may not have run concurrently");
+            assert!(
+                range > max / 10,
+                "Observation range too narrow - queries may not have run concurrently"
+            );
         }
 
         let _ = std::fs::remove_file(db_path);

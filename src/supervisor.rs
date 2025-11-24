@@ -85,7 +85,8 @@ where
         drop(self.command_sender);
         drop(self.query_sender);
 
-        let _ = self.command_worker
+        let _ = self
+            .command_worker
             .join_handle
             .join()
             .map_err(|err| Error::Internal(format!("Command worker panicked: {err:?}")))?;

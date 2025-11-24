@@ -70,10 +70,7 @@ mod tests {
     #[test]
     fn query_workers_busy_display() {
         let err = Error::QueryWorkersBusy;
-        assert_eq!(
-            err.to_string(),
-            "Query workers busy - backpressure applied"
-        );
+        assert_eq!(err.to_string(), "Query workers busy - backpressure applied");
     }
 
     #[test]

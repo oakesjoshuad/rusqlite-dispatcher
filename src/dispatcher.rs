@@ -102,7 +102,7 @@ where
                 // Blocking receive
                 match response_rx.recv().await {
                     Ok(Ok(())) => Ok(()),
-                    Ok(Err(db_err)) => Err(db_err.into()),
+                    Ok(Err(db_err)) => Err(db_err),
                     Err(_recv_err) => Err(Error::Internal("Worker died".to_string())),
                 }
             }

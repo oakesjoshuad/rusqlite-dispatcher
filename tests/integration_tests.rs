@@ -16,9 +16,19 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub enum NoteCommand {
     CreateTable,
-    Create { id: u64, title: String, content: String },
-    Update { id: u64, title: String, content: String },
-    Delete { id: u64 },
+    Create {
+        id: u64,
+        title: String,
+        content: String,
+    },
+    Update {
+        id: u64,
+        title: String,
+        content: String,
+    },
+    Delete {
+        id: u64,
+    },
 }
 
 /// Domain queries for notes operations
@@ -109,9 +119,7 @@ impl DomainHandler for NoteHandler {
                 );
                 match result {
                     Ok(note) => Ok(NoteQueryResponse::Note(Some(note))),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => {
-                        Ok(NoteQueryResponse::Note(None))
-                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(NoteQueryResponse::Note(None)),
                     Err(e) => Err(e),
                 }
             }
@@ -132,7 +140,8 @@ impl DomainHandler for NoteHandler {
                 Ok(NoteQueryResponse::Notes(result))
             }
             NoteQuery::Count => {
-                let count: u64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?;
+                let count: u64 =
+                    conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?;
                 Ok(NoteQueryResponse::Count(count))
             }
         }
@@ -518,16 +527,20 @@ mod async_tests {
         dispatcher.execute_command(NoteCommand::CreateTable).await?;
 
         // Create notes
-        dispatcher.execute_command(NoteCommand::Create {
-            id: 1,
-            title: "First".into(),
-            content: "Content 1".into(),
-        }).await?;
-        dispatcher.execute_command(NoteCommand::Create {
-            id: 2,
-            title: "Second".into(),
-            content: "Content 2".into(),
-        }).await?;
+        dispatcher
+            .execute_command(NoteCommand::Create {
+                id: 1,
+                title: "First".into(),
+                content: "Content 1".into(),
+            })
+            .await?;
+        dispatcher
+            .execute_command(NoteCommand::Create {
+                id: 2,
+                title: "Second".into(),
+                content: "Content 2".into(),
+            })
+            .await?;
 
         // Verify count
         let response = dispatcher.execute_query(NoteQuery::Count).await?;
@@ -547,14 +560,18 @@ mod async_tests {
         let dispatcher = Dispatcher::new(&db_path, NoteHandler, config)?;
 
         dispatcher.execute_command(NoteCommand::CreateTable).await?;
-        dispatcher.execute_command(NoteCommand::Create {
-            id: 1,
-            title: "Test".into(),
-            content: "Test Content".into(),
-        }).await?;
+        dispatcher
+            .execute_command(NoteCommand::Create {
+                id: 1,
+                title: "Test".into(),
+                content: "Test Content".into(),
+            })
+            .await?;
 
         // Query by ID
-        let response = dispatcher.execute_query(NoteQuery::FindById { id: 1 }).await?;
+        let response = dispatcher
+            .execute_query(NoteQuery::FindById { id: 1 })
+            .await?;
         match response {
             NoteQueryResponse::Note(Some(note)) => {
                 assert_eq!(note.id, 1);
@@ -565,7 +582,9 @@ mod async_tests {
         }
 
         // Query non-existent
-        let response = dispatcher.execute_query(NoteQuery::FindById { id: 999 }).await?;
+        let response = dispatcher
+            .execute_query(NoteQuery::FindById { id: 999 })
+            .await?;
         assert_eq!(response, NoteQueryResponse::Note(None));
 
         dispatcher.shutdown()?;
@@ -582,20 +601,26 @@ mod async_tests {
         let dispatcher = Dispatcher::new(&db_path, NoteHandler, config)?;
 
         dispatcher.execute_command(NoteCommand::CreateTable).await?;
-        dispatcher.execute_command(NoteCommand::Create {
-            id: 1,
-            title: "Original".into(),
-            content: "Original Content".into(),
-        }).await?;
+        dispatcher
+            .execute_command(NoteCommand::Create {
+                id: 1,
+                title: "Original".into(),
+                content: "Original Content".into(),
+            })
+            .await?;
 
         // Update
-        dispatcher.execute_command(NoteCommand::Update {
-            id: 1,
-            title: "Updated".into(),
-            content: "Updated Content".into(),
-        }).await?;
+        dispatcher
+            .execute_command(NoteCommand::Update {
+                id: 1,
+                title: "Updated".into(),
+                content: "Updated Content".into(),
+            })
+            .await?;
 
-        let response = dispatcher.execute_query(NoteQuery::FindById { id: 1 }).await?;
+        let response = dispatcher
+            .execute_query(NoteQuery::FindById { id: 1 })
+            .await?;
         match response {
             NoteQueryResponse::Note(Some(note)) => {
                 assert_eq!(note.title, "Updated");
@@ -605,7 +630,9 @@ mod async_tests {
         }
 
         // Delete
-        dispatcher.execute_command(NoteCommand::Delete { id: 1 }).await?;
+        dispatcher
+            .execute_command(NoteCommand::Delete { id: 1 })
+            .await?;
         let response = dispatcher.execute_query(NoteQuery::Count).await?;
         assert_eq!(response, NoteQueryResponse::Count(0));
 

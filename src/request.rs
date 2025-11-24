@@ -5,10 +5,10 @@
 //! - With tokio feature: tokio::sync::oneshot (async receive)
 
 #[cfg(not(feature = "tokio"))]
-use crossbeam_channel::{bounded, Receiver, RecvError, Sender};
+use crossbeam_channel::{Receiver, RecvError, Sender, bounded};
 
 #[cfg(feature = "tokio")]
-use tokio::sync::oneshot::{channel, Receiver, Sender, error::RecvError};
+use tokio::sync::oneshot::{Receiver, Sender, channel, error::RecvError};
 
 /// Request wrapper containing command/query and response channel.
 ///
