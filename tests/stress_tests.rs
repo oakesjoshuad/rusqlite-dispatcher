@@ -730,7 +730,7 @@ mod async_tests {
                 tokio::spawn(async move {
                     let mut op_count = 0u64;
                     while !complete.load(Ordering::Relaxed) {
-                        let is_read = (op_count % 5) != 0;
+                        let is_read = op_count.is_multiple_of(5);
 
                         if is_read {
                             let qry_start = Instant::now();
