@@ -6,7 +6,6 @@
 //! constraints, validation failures) from operator-facing errors (backpressure,
 //! capacity), enabling clients to implement appropriate recovery strategies.
 
-use std::error::Error as StdError;
 use thiserror::Error;
 
 /// Unified error type for all dispatcher operations.
@@ -42,15 +41,10 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl From<tokio::task::JoinError> for Error {
-    fn from(err: tokio::task::JoinError) -> Self {
-        Error::Internal(format!("Task join error: {}", err))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
 
     // Test 1: Display Formatting
     // Validates that error messages are user-friendly and informative
@@ -76,10 +70,7 @@ mod tests {
     #[test]
     fn query_workers_busy_display() {
         let err = Error::QueryWorkersBusy;
-        assert_eq!(
-            err.to_string(),
-            "Query workers busy - backpressure applied"
-        );
+        assert_eq!(err.to_string(), "Query workers busy - backpressure applied");
     }
 
     #[test]
@@ -126,28 +117,6 @@ mod tests {
                 // Correct - rusqlite error wrapped in Database variant
             }
             _ => panic!("Expected Database variant"),
-        }
-    }
-
-    #[test]
-    fn from_tokio_join_error() {
-        // Create a JoinError by spawning a task that panics
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let handle = rt.spawn(async {
-            panic!("test panic");
-        });
-
-        let result = rt.block_on(handle);
-        assert!(result.is_err());
-
-        let join_err = result.unwrap_err();
-        let err: Error = join_err.into();
-
-        match err {
-            Error::Internal(msg) => {
-                assert!(msg.contains("Task join error"));
-            }
-            _ => panic!("Expected Internal variant"),
         }
     }
 

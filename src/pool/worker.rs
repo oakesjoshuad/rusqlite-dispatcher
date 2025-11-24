@@ -3,34 +3,29 @@
 //! Defines the core Worker<H> type and traits for worker execution.
 //! Connection setup handles SQLite pragmas for performance and concurrency.
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
-
-use super::command_worker::{CommandMetrics, CommandWorker};
-use super::metadata::{WorkerId, WorkerJoinHandle, WorkerType};
-use super::query_worker::{QueryMetrics, QueryWorker};
+use super::command_worker::CommandWorker;
+use super::metadata::{WorkerId, WorkerType};
+use super::query_worker::QueryWorker;
 use crate::Result;
+use crate::channel::{CommandReceiver, QueryReceiver};
 use crate::handler::DomainHandler;
 
-// --- TRAITS ---
-
-/// Worker execution trait for CommandWorker and QueryWorker.
-///
-/// Defines the async run loop that processes requests from a channel
-/// until the sender is dropped (graceful shutdown signal).
-#[async_trait]
 pub(crate) trait WorkerRunner<H: DomainHandler> {
     /// Channel receiver type for this worker.
     type Receiver;
 
     /// Run the worker loop until channel is closed.
-    async fn run(mut self, receiver: Self::Receiver) -> Result<()>;
+    fn run(self, receiver: Self::Receiver) -> Result<()>;
 }
 
 // --- TYPES ---
 
 type WorkerConnection = rusqlite::Connection;
+
+/// Wrapper around thread JoinHandle for supervised workers.
+///
+/// Provides consistent API regardless of underlying threading model.
+pub(crate) type WorkerJoinHandle = std::thread::JoinHandle<Result<()>>;
 
 /// Base worker struct containing database connection and handler.
 ///
@@ -38,18 +33,18 @@ type WorkerConnection = rusqlite::Connection;
 /// the static methods and return supervised handles.
 #[derive(Debug)]
 pub(crate) struct Worker<H: DomainHandler> {
+    pub(crate) worker_id: WorkerId,
+    pub(crate) worker_type: WorkerType,
     pub(crate) connection: WorkerConnection,
     pub(crate) handler: H,
 }
 
-/// Supervised worker wrapper providing metrics and lifecycle management.
+/// Supervised worker wrapper for lifecycle management.
 ///
-/// Wraps a worker with its associated metrics and task join handle.
-/// Type parameter M is typically CommandMetrics or QueryMetrics.
+/// Wraps a spawned worker task for lifecycle management.
+/// Metadata is stored in the Worker itself for use in tracing and monitoring.
 #[derive(Debug)]
-pub(crate) struct SupervisedWorker<M> {
-    pub(crate) worker_id: WorkerId,
-    pub(crate) metrics: Arc<M>,
+pub(crate) struct SupervisedWorker {
     pub(crate) join_handle: WorkerJoinHandle,
 }
 
@@ -66,38 +61,31 @@ impl<H: DomainHandler> Worker<H> {
     /// * `db_path` - SQLite database path (supports URI)
     /// * `handler` - Domain handler implementation
     /// * `channel_size` - Bounded channel capacity for backpressure
-    pub(crate) async fn spawn_command_worker(
+    pub(crate) fn spawn_command_worker(
         db_path: &str,
         handler: H,
-        channel_size: usize,
-    ) -> Result<(
-        super::command_worker::SupervisedCommandWorker,
-        crate::channel::CommandSender<H>,
-    )> {
+        receiver: CommandReceiver<H>,
+    ) -> Result<SupervisedWorker>
+    where
+        H: Clone,
+    {
         let connection = Self::create_connection(WorkerType::Command, db_path)?;
-        let (tx, rx) = tokio::sync::mpsc::channel(channel_size);
-        let metrics = Arc::new(CommandMetrics::default());
         let worker_id = ulid::Ulid::new();
 
         let worker = Worker {
+            worker_id,
+            worker_type: WorkerType::Command,
             connection,
             handler,
         };
 
-        let command_worker = CommandWorker {
-            worker,
-            metrics: Arc::clone(&metrics),
-        };
+        let command_worker = CommandWorker { worker };
 
-        let join_handle = tokio::spawn(async move { command_worker.run(rx).await });
+        let join_handle = std::thread::spawn(move || command_worker.run(receiver));
 
-        let supervised = SupervisedWorker {
-            worker_id,
-            metrics,
-            join_handle,
-        };
+        let supervised = SupervisedWorker { join_handle };
 
-        Ok((supervised, tx))
+        Ok(supervised)
     }
 
     /// Spawn a query worker (one of N R/O workers).
@@ -110,38 +98,30 @@ impl<H: DomainHandler> Worker<H> {
     /// * `db_path` - SQLite database path (supports URI)
     /// * `handler` - Domain handler implementation
     /// * `channel_size` - Bounded channel capacity for backpressure
-    pub(crate) async fn spawn_query_worker(
+    pub(crate) fn spawn_query_worker(
         db_path: &str,
         handler: H,
-        channel_size: usize,
-    ) -> Result<(
-        super::query_worker::SupervisedQueryWorker,
-        crate::channel::QuerySender<H>,
-    )> {
+        receiver: QueryReceiver<H>,
+    ) -> Result<SupervisedWorker>
+    where
+        H: Clone,
+    {
         let connection = Self::create_connection(WorkerType::Query, db_path)?;
-        let (tx, rx) = tokio::sync::mpsc::channel(channel_size);
-        let metrics = Arc::new(QueryMetrics::new());
         let worker_id = ulid::Ulid::new();
-
         let worker = Worker {
+            worker_id,
+            worker_type: WorkerType::Query,
             connection,
             handler,
         };
 
-        let query_worker = QueryWorker {
-            worker,
-            metrics: Arc::clone(&metrics),
-        };
+        let query_worker = QueryWorker { worker };
 
-        let join_handle = tokio::spawn(async move { query_worker.run(rx).await });
+        let join_handle = std::thread::spawn(move || query_worker.run(receiver));
 
-        let supervised = SupervisedWorker {
-            worker_id,
-            metrics,
-            join_handle,
-        };
+        let supervised = SupervisedWorker { join_handle };
 
-        Ok((supervised, tx))
+        Ok(supervised)
     }
 
     /// Create database connection with worker-type-specific configuration.
@@ -178,6 +158,8 @@ impl<H: DomainHandler> Worker<H> {
 
         match worker_type {
             WorkerType::Command => {
+                // Enable foreign key constraings (OFF by default in SQLite)
+                connection.pragma_update(None, "foreign_keys", "ON")?;
                 // Enable WAL mode for concurrent readers
                 connection.pragma_update(None, "journal_mode", "WAL")?;
                 // NORMAL sync is safe with WAL and much faster
@@ -186,6 +168,8 @@ impl<H: DomainHandler> Worker<H> {
                 connection.pragma_update(None, "cache_size", "-64000")?;
             }
             WorkerType::Query => {
+                // Enable foreign key constraings (OFF by default in SQLite)
+                connection.pragma_update(None, "foreign_keys", "ON")?;
                 // 32MB cache for read-only worker
                 connection.pragma_update(None, "cache_size", "-32000")?;
             }
@@ -200,6 +184,7 @@ impl<H: DomainHandler> Worker<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Mock handler for testing
@@ -277,9 +262,8 @@ mod tests {
         assert!(result.is_err());
 
         // But reading should work
-        let result = query_conn.query_row("SELECT COUNT(*) FROM test", [], |row| {
-            row.get::<_, i64>(0)
-        });
+        let result =
+            query_conn.query_row("SELECT COUNT(*) FROM test", [], |row| row.get::<_, i64>(0));
         assert!(result.is_ok());
 
         // Cleanup
@@ -362,6 +346,23 @@ mod tests {
     }
 
     #[test]
+    fn create_connection_command_sets_foreign_keys() {
+        let path = temp_db_path();
+        let conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
+            .expect("Failed to create connection");
+
+        // Query foreign keys setting
+        let foreign_keys: i32 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("Failed to query foreign_keys");
+
+        assert_eq!(foreign_keys, 1); // ON
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn create_connection_invalid_path_fails() {
         let invalid_path = "/nonexistent/path/that/cannot/exist/test.db";
         let result = Worker::<TestHandler>::create_connection(WorkerType::Command, invalid_path);
@@ -370,251 +371,63 @@ mod tests {
 
     // --- SPAWN_COMMAND_WORKER TESTS ---
 
-    #[tokio::test]
-    async fn spawn_command_worker_succeeds() {
+    #[test]
+    fn spawn_command_worker_succeeds() {
         let path = temp_db_path();
         let handler = TestHandler {
             call_count: Arc::new(AtomicUsize::new(0)),
         };
+        let (_tx, rx) =
+            crossbeam_channel::bounded::<crate::channel::CommandRequest<TestHandler>>(10);
 
-        let result = Worker::spawn_command_worker(&path, handler, 10).await;
+        let result = Worker::spawn_command_worker(&path, handler, rx);
         assert!(result.is_ok());
 
-        let (supervised, sender) = result.unwrap();
-        // Verify we got a sender
-        assert!(!sender.is_closed());
-        // Verify we got metrics
-        assert_eq!(supervised.metrics.fetch_commands_processed(), 0);
-
         // Cleanup
         let _ = std::fs::remove_file(&path);
     }
 
-    #[tokio::test]
-    async fn spawn_command_worker_creates_metrics() {
-        let path = temp_db_path();
+    #[test]
+    fn spawn_command_worker_invalid_path_fails() {
         let handler = TestHandler {
             call_count: Arc::new(AtomicUsize::new(0)),
         };
+        let (_tx, rx) =
+            crossbeam_channel::bounded::<crate::channel::CommandRequest<TestHandler>>(10);
 
-        let (supervised, _) = Worker::spawn_command_worker(&path, handler, 10)
-            .await
-            .expect("Failed to spawn");
-
-        // Verify metrics are initialized
-        assert_eq!(supervised.metrics.fetch_commands_processed(), 0);
-        assert_eq!(supervised.metrics.fetch_last_command_duration_micros(), 0);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[tokio::test]
-    async fn spawn_command_worker_invalid_path_fails() {
-        let handler = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let result = Worker::spawn_command_worker("/nonexistent/path/test.db", handler, 10).await;
+        let result = Worker::spawn_command_worker("/nonexistent/path/test.db", handler, rx);
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn spawn_command_worker_generates_unique_ids() {
-        let path = temp_db_path();
-        let handler1 = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-        let handler2 = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let (supervised1, _) = Worker::spawn_command_worker(&path, handler1, 10)
-            .await
-            .expect("Failed to spawn first");
-
-        let (supervised2, _) = Worker::spawn_command_worker(&path, handler2, 10)
-            .await
-            .expect("Failed to spawn second");
-
-        // Verify worker IDs are different
-        assert_ne!(supervised1.worker_id, supervised2.worker_id);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[tokio::test]
-    async fn spawn_command_worker_channel_has_capacity() {
-        let path = temp_db_path();
-        let handler = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let (_, sender) = Worker::spawn_command_worker(&path, handler, 5)
-            .await
-            .expect("Failed to spawn");
-
-        // Should be able to reserve capacity
-        let result = sender.try_reserve();
-        assert!(result.is_ok());
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
     }
 
     // --- SPAWN_QUERY_WORKER TESTS ---
 
-    #[tokio::test]
-    async fn spawn_query_worker_succeeds() {
+    #[test]
+    fn spawn_query_worker_succeeds() {
         let path = temp_db_path();
         // Create database first
-        let cmd_conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
+        let _cmd_conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
             .expect("Failed to create command connection");
-        drop(cmd_conn);
 
         let handler = TestHandler {
             call_count: Arc::new(AtomicUsize::new(0)),
         };
+        let (_tx, rx) = crossbeam_channel::bounded::<crate::channel::QueryRequest<TestHandler>>(10);
 
-        let result = Worker::spawn_query_worker(&path, handler, 10).await;
-        assert!(result.is_ok());
-
-        let (supervised, sender) = result.unwrap();
-        assert!(!sender.is_closed());
-        assert_eq!(supervised.metrics.fetch_queries_processed(), 0);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[tokio::test]
-    async fn spawn_query_worker_creates_metrics() {
-        let path = temp_db_path();
-        let cmd_conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
-            .expect("Failed to create command connection");
-        drop(cmd_conn);
-
-        let handler = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let (supervised, _) = Worker::spawn_query_worker(&path, handler, 10)
-            .await
-            .expect("Failed to spawn");
-
-        // Verify QueryMetrics are initialized (different from CommandMetrics)
-        assert_eq!(supervised.metrics.fetch_queries_processed(), 0);
-        assert_eq!(supervised.metrics.fetch_avg_query_duration_micros(), 0);
-        assert_eq!(supervised.metrics.fetch_last_query_duration_micros(), 0);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[tokio::test]
-    async fn spawn_query_worker_generates_unique_ids() {
-        let path = temp_db_path();
-        let cmd_conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
-            .expect("Failed to create command connection");
-        drop(cmd_conn);
-
-        let handler1 = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-        let handler2 = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let (supervised1, _) = Worker::spawn_query_worker(&path, handler1, 10)
-            .await
-            .expect("Failed to spawn first");
-
-        let (supervised2, _) = Worker::spawn_query_worker(&path, handler2, 10)
-            .await
-            .expect("Failed to spawn second");
-
-        // Verify worker IDs are different
-        assert_ne!(supervised1.worker_id, supervised2.worker_id);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[tokio::test]
-    async fn spawn_query_worker_channel_has_capacity() {
-        let path = temp_db_path();
-        let cmd_conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
-            .expect("Failed to create command connection");
-        drop(cmd_conn);
-
-        let handler = TestHandler {
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let (_, sender) = Worker::spawn_query_worker(&path, handler, 5)
-            .await
-            .expect("Failed to spawn");
-
-        let result = sender.try_reserve();
+        let result = Worker::spawn_query_worker(&path, handler, rx);
         assert!(result.is_ok());
 
         // Cleanup
         let _ = std::fs::remove_file(&path);
     }
-
-    // --- EDGE CASES ---
 
     #[test]
-    fn multiple_workers_same_database_command_and_query() {
-        let path = temp_db_path();
-
-        // Create with command worker
-        let cmd_conn = Worker::<TestHandler>::create_connection(WorkerType::Command, &path)
-            .expect("Failed to create command connection");
-
-        // Create table
-        cmd_conn
-            .execute("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)", [])
-            .expect("Failed to create table");
-
-        drop(cmd_conn);
-
-        // Now open query connection
-        let query_conn = Worker::<TestHandler>::create_connection(WorkerType::Query, &path)
-            .expect("Failed to create query connection");
-
-        // Should be able to read
-        let count: i64 = query_conn
-            .query_row("SELECT COUNT(*) FROM test", [], |row| row.get(0))
-            .expect("Failed to query");
-
-        assert_eq!(count, 0);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[tokio::test]
-    async fn spawn_workers_with_different_channel_sizes() {
-        let path = temp_db_path();
+    fn spawn_query_worker_invalid_path_fails() {
         let handler = TestHandler {
             call_count: Arc::new(AtomicUsize::new(0)),
         };
+        let (_tx, rx) = crossbeam_channel::bounded::<crate::channel::QueryRequest<TestHandler>>(10);
 
-        // Small channel
-        let (_, sender1) = Worker::spawn_command_worker(&path, handler.clone(), 1)
-            .await
-            .expect("Failed to spawn with size 1");
-        assert!(sender1.try_reserve().is_ok());
-
-        // Large channel
-        let (_, sender2) = Worker::spawn_command_worker(&path, handler, 1000)
-            .await
-            .expect("Failed to spawn with size 1000");
-        assert!(sender2.try_reserve().is_ok());
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
+        let result = Worker::spawn_query_worker("/nonexistent/path/test.db", handler, rx);
+        assert!(result.is_err());
     }
 }

@@ -5,8 +5,6 @@
 //! (time-ordered ID) and is classified as either Command (single R/W) or
 //! Query (one of N read-only workers).
 
-use crate::error::Result;
-
 /// Unique worker identifier using ULID.
 ///
 /// ULIDs are time-ordered unique identifiers that maintain sortability
@@ -15,13 +13,6 @@ use crate::error::Result;
 ///
 /// Generated fresh with `ulid::Ulid::new()`.
 pub(crate) type WorkerId = ulid::Ulid;
-
-/// Join handle for spawned worker tasks.
-///
-/// Allows the supervisor to wait for worker completion or cancel workers
-/// during graceful shutdown. Returns `Result<()>` - worker succeeded or
-/// encountered a fatal error.
-pub(crate) type WorkerJoinHandle = tokio::task::JoinHandle<Result<()>>;
 
 /// Classification of worker by access pattern and concurrency.
 ///
