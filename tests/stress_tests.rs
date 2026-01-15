@@ -440,7 +440,7 @@ mod sync_tests {
         let db_path = "/tmp/test_mixed_80_20_sync.db";
         let _ = std::fs::remove_file(db_path);
 
-        const DURATION_SECS: u64 = 5;
+        const DURATION_SECS: u64 = 30;
         const NUM_WORKERS: usize = 8;
 
         println!("\nMixed Workload 80/20 Test (Sync)");
@@ -702,7 +702,7 @@ mod async_tests {
         let db_path = "/tmp/test_mixed_80_20_async.db";
         let _ = std::fs::remove_file(db_path);
 
-        const DURATION_SECS: u64 = 5;
+        const DURATION_SECS: u64 = 30;
         const NUM_TASKS: usize = 8;
 
         println!("\nMixed Workload 80/20 Test (Async)");
@@ -792,8 +792,8 @@ mod async_tests {
         let db_path = "/tmp/test_users_async.db";
         let _ = std::fs::remove_file(db_path);
 
-        const DURATION_SECS: u64 = 10;
-        const CONCURRENT_USERS: usize = 20;
+        const DURATION_SECS: u64 = 30;
+        const CONCURRENT_USERS: usize = 50;
 
         println!("\nConcurrent Users Duration Test (Async)");
         println!("Duration: {}s | Users: {}", DURATION_SECS, CONCURRENT_USERS);
